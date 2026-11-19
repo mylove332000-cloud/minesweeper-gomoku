@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>五子棋</title>
+<style>
+  :root {
+    --bg:#eceff1; --panel:#ffffff; --ink:#1c2a33; --muted:#5d6f7a; --line:#c5d0d6; --accent:#2f6f8f; --onaccent:#ffffff;
+    --wood:#dcb674; --grid:#6b4f26; --black:#15191c; --white:#fafafa; --win:#e4572e;
+    box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); color-scheme:light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#12181c; --panel:#1b252b; --ink:#e6eef2; --muted:#93a6b0; --line:#2c3a42; --accent:#6fb7d6; --onaccent:#0b1a22;
+      --wood:#a98a52; --grid:#3d2f16; --black:#0b0e10; --white:#eef2f4; --win:#ff7a4d; color-scheme:dark;
+    }
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; padding:14px 10px 24px; min-height:100vh; background:var(--bg); color:var(--ink);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    display:flex; flex-direction:column; align-items:center; gap:12px; user-select:none; -webkit-user-select:none; }
+  h1 { margin:4px 0 0; font-size:26px; letter-spacing:.06em; }
+  button, input { font:inherit; font-size:16px; padding:8px 14px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--ink); }
+  input { width:140px; user-select:text; -webkit-user-select:text; }
+  button.on, button.primary { background:var(--accent); border-color:var(--accent); color:var(--onaccent); font-weight:600; }
+  button:focus-visible, input:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .row { display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; }
+  #status { font-size:18px; font-weight:600; text-align:center; min-height:28px; max-width:360px; line-height:1.5; }
+  canvas { border-radius:8px; touch-action:manipulation; display:block; box-shadow:0 2px 0 var(--line); }
+  .hint { font-size:14px; color:var(--muted); text-align:center; max-width:380px; line-height:1.7; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<h1>五子棋</h1>
+<div class="row">
+  <button id="mAi" class="on">對電腦</button>
+  <button id="mNet">連線對戰</button>
+</div>
+<div id="netBox" class="row" hidden>
+  <input id="code" placeholder="房間代碼" maxlength="4" autocapitalize="off" autocomplete="off" aria-label="房間代碼">
+  <button id="join">加入</button>
+  <button id="create">建立房間</button>
+</div>
+<div id="status" aria-live="polite"></div>
+<canvas id="cv"></canvas>
+<div class="row"><button id="again" class="primary">新的一局</button></div>
+<div class="hint" id="hint"></div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const N = 15, DIRS = [[0,1],[1,0],[1,1],[1,-1]];
+const CODE_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const stEl = document.getElementById('status');
+let mode = 'ai', S = 0, CELL = 0;
+let board, hist, over, winner, turn, view;
+let peer = null, conn = null, my = 0, round = 0, isHost = false;
+
+function css(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function setStatus(t) { stEl.textContent = t; }
+
+function resize() {
+  S = Math.min(window.innerWidth - 20, 560);
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = S * dpr; cv.height = S * dpr;
+  cv.style.width = S + 'px'; cv.style.height = S + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  CELL = S / (N + 1);
+  draw();
+}
+
+function draw() {
+  const c = CELL;
+  ctx.clearRect(0, 0, S, S);
+  ctx.fillStyle = css('--wood'); ctx.fillRect(0, 0, S, S);
+  ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const p = c + i * c;
+    ctx.moveTo(c, p); ctx.lineTo(c * N, p);
+    ctx.moveTo(p, c); ctx.lineTo(p, c * N);
+  }
+  ctx.stroke();
+  ctx.fillStyle = css('--grid');
+  [[3,3],[3,11],[11,3],[11,11],[7,7]].forEach(function (q) {
+    ctx.beginPath(); ctx.arc(c + q[1] * c, c + q[0] * c, c * 0.12, 0, 6.283); ctx.fill();
+  });
+  view.b.forEach(function (v, i) {
+    if (!v) return;
+    const x = c + (i % N) * c, y = c + Math.floor(i / N) * c;
+    ctx.beginPath(); ctx.arc(x, y, c * 0.44, 0, 6.283);
+    ctx.fillStyle = css(v === 1 ? '--black' : '--white'); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1; ctx.stroke();
+  });
+  if (view.last >= 0) {
+    ctx.beginPath(); ctx.arc(c + (view.last % N) * c, c + Math.floor(view.last / N) * c, c * 0.12, 0, 6.283);
+    ctx.fillStyle = css('--win'); ctx.fill();
+  }
+  if (view.win) {
+    ctx.strokeStyle = css('--win'); ctx.lineWidth = 3;
+    view.win.forEach(function (i) {
+      ctx.beginPath(); ctx.arc(c + (i % N) * c, c + Math.floor(i / N) * c, c * 0.44, 0, 6.283); ctx.stroke();
+    });
+  }
+}
+
+function line(b, r, c, p) {
+  for (const d of DIRS) {
+    const cells = [r * N + c];
+    for (const s of [1, -1]) {
+      let a = r + d[0] * s, e = c + d[1] * s;
+      while (a >= 0 && a < N && e >= 0 && e < N && b[a * N + e] === p) { cells.push(a * N + e); a += d[0] * s; e += d[1] * s; }
+    }
+    if (cells.length >= 5) return cells;
+  }
+  return null;
+}
+
+function resetBoard() {
+  board = new Array(N * N).fill(0); hist = []; over = false; winner = 0; turn = 1;
+  view = { b: board, last: -1, win: null }; draw();
+}
+function place(i, p) {
+  board[i] = p; hist.push(i);
+  const w = line(board, Math.floor(i / N), i % N, p);
+  view = { b: board, last: i, win: w };
+  if (w) { over = true; winner = p; } else if (hist.length === N * N) { over = true; winner = 0; }
+  draw();
+}
+
+/* ---------- vs computer ---------- */
+function score(b, r, c, p) {
+  let t = 0;
+  for (const d of DIRS) {
+    let n = 1, open = 0;
+    for (const s of [1, -1]) {
+      let a = r + d[0] * s, e = c + d[1] * s;
+      while (a >= 0 && a < N && e >= 0 && e < N && b[a * N + e] === p) { n++; a += d[0] * s; e += d[1] * s; }
+      if (a >= 0 && a < N && e >= 0 && e < N && b[a * N + e] === 0) open++;
+    }
+    t += n >= 5 ? 1e5 : n === 4 ? (open === 2 ? 1e4 : open === 1 ? 1e3 : 0)
+       : n === 3 ? (open === 2 ? 1e3 : open === 1 ? 100 : 0)
+       : n === 2 ? (open === 2 ? 100 : open === 1 ? 10 : 0) : 1;
+  }
+  return t;
+}
+function near(r, c) {
+  for (let a = Math.max(0, r - 2); a <= Math.min(N - 1, r + 2); a++)
+    for (let e = Math.max(0, c - 2); e <= Math.min(N - 1, c + 2); e++)
+      if (board[a * N + e]) return true;
+  return false;
+}
+function aiPick() {
+  if (!hist.length) return 7 * N + 7;
+  let best = -1, bs = -1;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (board[r * N + c] || !near(r, c)) continue;
+    const s = score(board, r, c, 2) * 1.1 + score(board, r, c, 1) + Math.random();
+    if (s > bs) { bs = s; best = r * N + c; }
+  }
+  return best;
+}
+function aiStatus() {
+  if (over) setStatus(winner === 1 ? '你贏了！🎉' : winner === 2 ? '電腦贏了，再來一局吧' : '和局');
+  else setStatus(turn === 1 ? '輪到你（黑棋）' : '電腦思考中…');
+}
+function newAi() { resetBoard(); aiStatus(); }
+function aiTap(r, c) {
+  if (over || turn !== 1 || board[r * N + c]) return;
+  place(r * N + c, 1);
+  if (over) { aiStatus(); return; }
+  turn = 2; aiStatus();
+  setTimeout(function () {
+    if (mode !== 'ai' || over) return;
+    place(aiPick(), 2);
+    if (!over) turn = 1;
+    aiStatus();
+  }, 350);
+}
+
+/* ---------- online (PeerJS, peer to peer) ---------- */
+function netStatus() {
+  if (!conn || !conn.open) return;
+  const mine = my === 1 ? '黑棋' : '白棋';
+  if (over) setStatus(winner === 0 ? '和局' : winner === my ? '你贏了！🎉' : '對手贏了');
+  else setStatus(turn === my ? '輪到你（' + mine + '）' : '等對手下棋（你是' + mine + '）');
+}
+function startNetRound() {
+  resetBoard();
+  my = isHost ? (round % 2 === 0 ? 1 : 2) : (round % 2 === 0 ? 2 : 1);
+  netStatus();
+}
+function applyNet(i, p) {
+  place(i, p);
+  if (!over) turn = 3 - p;
+  netStatus();
+}
+function onData(d) {
+  if (!d || typeof d !== 'object') return;
+  if (d.t === 'm') {
+    const i = d.i;
+    if (!Number.isInteger(i) || i < 0 || i >= N * N || board[i] || over || turn === my) return;
+    applyNet(i, 3 - my);
+  } else if (d.t === 'again') {
+    if (Number.isInteger(d.r) && d.r > round) { round = d.r; startNetRound(); }
+  }
+}
+function setupConn(c) {
+  if (conn && conn.open) { c.close(); return; }
+  conn = c;
+  const go = function () { round = 0; startNetRound(); };
+  c.on('open', go);
+  if (c.open) go();
+  c.on('data', onData);
+  c.on('close', function () { if (conn === c) { conn = null; setStatus('對手已離線，可重新建立或加入房間'); } });
+  c.on('error', function () { setStatus('連線發生問題，請重新建立或加入房間'); });
+}
+function leaveNet() {
+  try { if (conn) conn.close(); } catch (e) {}
+  try { if (peer) peer.destroy(); } catch (e) {}
+  conn = null; peer = null; my = 0;
+}
+function netTap(r, c) {
+  const i = r * N + c;
+  if (!conn || !conn.open || over || turn !== my || board[i]) return;
+  applyNet(i, my);
+  try { conn.send({ t: 'm', i: i }); } catch (e) { setStatus('傳送失敗，請檢查網路'); }
+}
+function peerReady() {
+  if (typeof Peer === 'undefined') { setStatus('連線元件載入失敗，請檢查網路後重新整理頁面'); return false; }
+  return true;
+}
+function createRoom(tries) {
+  if (!peerReady()) return;
+  leaveNet(); isHost = true; resetBoard();
+  let code = ''; for (let i = 0; i < 4; i++) code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  setStatus('建立房間中…');
+  const p = new Peer('gmk-' + code); peer = p;
+  p.on('open', function () {
+    document.getElementById('code').value = code;
+    setStatus('房間 ' + code + '：等待朋友加入，把代碼傳給他');
+  });
+  p.on('connection', setupConn);
+  p.on('error', function (e) {
+    if (peer !== p) return;
+    if (e.type === 'unavailable-id' && (tries || 0) < 3) { createRoom((tries || 0) + 1); return; }
+    setStatus('建立房間失敗（' + e.type + '），請再試一次');
+  });
+}
+function joinRoom(raw) {
+  const code = (raw || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!code) { setStatus('請先輸入房間代碼，或按「建立房間」'); return; }
+  if (!peerReady()) return;
+  leaveNet(); isHost = false; resetBoard();
+  setStatus('連線中…');
+  const p = new Peer(); peer = p;
+  p.on('open', function () { setupConn(p.connect('gmk-' + code, { reliable: true })); });
+  p.on('error', function (e) {
+    if (peer !== p) return;
+    setStatus(e.type === 'peer-unavailable' ? '找不到這個房間，請確認代碼' : '連線失敗（' + e.type + '），請再試一次');
+  });
+}
+
+/* ---------- UI ---------- */
+function setMode(m) {
+  mode = m;
+  document.getElementById('mAi').classList.toggle('on', m === 'ai');
+  document.getElementById('mNet').classList.toggle('on', m === 'net');
+  document.getElementById('netBox').hidden = m !== 'net';
+  document.getElementById('hint').textContent = m === 'ai'
+    ? '你執黑棋先下，先連成五子者勝。'
+    : '一人按「建立房間」，把四碼代碼傳給朋友，朋友輸入後按「加入」即可。每局交換先手。';
+  if (m === 'ai') { leaveNet(); newAi(); }
+  else { leaveNet(); resetBoard(); setStatus('輸入房間代碼，或建立一個新房間'); }
+}
+cv.addEventListener('pointerup', function (e) {
+  const rc = cv.getBoundingClientRect();
+  const x = (e.clientX - rc.left) / rc.width * S, y = (e.clientY - rc.top) / rc.height * S;
+  const c = Math.round(x / CELL) - 1, r = Math.round(y / CELL) - 1;
+  if (r < 0 || r >= N || c < 0 || c >= N) return;
+  if (mode === 'ai') aiTap(r, c); else netTap(r, c);
+});
+document.getElementById('mAi').addEventListener('click', function () { setMode('ai'); });
+document.getElementById('mNet').addEventListener('click', function () { setMode('net'); });
+document.getElementById('join').addEventListener('click', function () { joinRoom(document.getElementById('code').value); });
+document.getElementById('create').addEventListener('click', function () { createRoom(0); });
+document.getElementById('again').addEventListener('click', function () {
+  if (mode === 'ai') { newAi(); return; }
+  if (conn && conn.open) {
+    round++;
+    try { conn.send({ t: 'again', r: round }); } catch (e) {}
+    startNetRound();
+  }
+});
+window.addEventListener('resize', resize);
+if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+setMode('ai'); resize();
+</script>
+</body>
+</html>
