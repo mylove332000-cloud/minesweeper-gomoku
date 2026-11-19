@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>踩地雷</title>
+<style>
+  :root {
+    --bg: #eef3f1; --panel: #ffffff; --ink: #14302b; --muted: #5b736d;
+    --cell: #b9ccc6; --cell-open: #f7faf9; --accent: #0f766e; --boom: #e4572e; --line: #9fb5ae;
+    --n1: #1d4ed8; --n2: #15803d; --n3: #c2410c; --n4: #6d28d9; --n5: #9f1239; --n6: #0e7490; --n7: #14302b; --n8: #5b736d;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1b19; --panel: #172826; --ink: #e3f1ed; --muted: #8fa9a2;
+      --cell: #35514c; --cell-open: #1f3330; --accent: #2dd4bf; --boom: #f0643a; --line: #0f1b19;
+      --n1: #7aa2ff; --n2: #4ade80; --n3: #fb923c; --n4: #c4a1ff; --n5: #fb7185; --n6: #22d3ee; --n7: #e3f1ed; --n8: #8fa9a2;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1b19; --panel: #172826; --ink: #e3f1ed; --muted: #8fa9a2;
+    --cell: #35514c; --cell-open: #1f3330; --accent: #2dd4bf; --boom: #f0643a; --line: #0f1b19;
+    --n1: #7aa2ff; --n2: #4ade80; --n3: #fb923c; --n4: #c4a1ff; --n5: #fb7185; --n6: #22d3ee; --n7: #e3f1ed; --n8: #8fa9a2;
+    color-scheme: dark;
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 14px 10px 24px; min-height: 100vh;
+    background: var(--bg); color: var(--ink);
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    user-select: none; -webkit-user-select: none;
+  }
+  h1 { margin: 6px 0 12px; font-size: 26px; letter-spacing: 0.04em; }
+  .bar { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+  select, button {
+    font: inherit; font-size: 16px; padding: 8px 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  :root[data-theme="dark"] button.primary { color: #06201c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button.primary { color: #06201c; } }
+  button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .stats { display: flex; gap: 10px; margin-bottom: 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 14px; font-size: 18px; font-variant-numeric: tabular-nums; min-width: 84px; text-align: center; }
+  .wrap { max-width: 100%; overflow-x: auto; padding: 2px; }
+  #board { display: grid; gap: 2px; background: var(--line); padding: 2px; border-radius: 8px; touch-action: manipulation; width: max-content; margin: 0 auto; }
+  .cell {
+    width: var(--size); height: var(--size); background: var(--cell); border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: calc(var(--size) * 0.56); line-height: 1;
+  }
+  .cell.open { background: var(--cell-open); }
+  .cell.boom { background: var(--boom); }
+  #msg { margin-top: 14px; font-size: 20px; min-height: 30px; text-align: center; font-weight: 600; }
+  .hint { margin-top: 6px; font-size: 14px; color: var(--muted); text-align: center; max-width: 360px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>踩地雷</h1>
+<div class="bar">
+  <select id="level" aria-label="難度">
+    <option value="9,9,10">簡單 9×9</option>
+    <option value="12,12,25">普通 12×12</option>
+    <option value="16,16,40">困難 16×16</option>
+  </select>
+  <button id="restart" class="primary">重新開始</button>
+</div>
+<div class="stats">
+  <div class="stat">🚩 <span id="flags">0</span></div>
+  <div class="stat">⏱ <span id="time">0</span></div>
+</div>
+<div class="wrap"><div id="board"></div></div>
+<div id="msg"></div>
+<div class="hint">點一下翻開格子，長按（電腦按右鍵）插旗。第一次點擊保證安全。</div>
+
+<script>
+let rows, cols, mines, grid, started, over, flagsLeft, seconds, timer, openedCount;
+const boardEl = document.getElementById('board');
+const msgEl = document.getElementById('msg');
+const COLORS = ['', 'var(--n1)', 'var(--n2)', 'var(--n3)', 'var(--n4)', 'var(--n5)', 'var(--n6)', 'var(--n7)', 'var(--n8)'];
+
+function init() {
+  [rows, cols, mines] = document.getElementById('level').value.split(',').map(Number);
+  grid = []; started = false; over = false; openedCount = 0;
+  flagsLeft = mines; seconds = 0;
+  clearInterval(timer);
+  document.getElementById('flags').textContent = flagsLeft;
+  document.getElementById('time').textContent = 0;
+  msgEl.textContent = '';
+
+  const size = Math.max(20, Math.min(40, Math.floor((Math.min(window.innerWidth, 560) - 32) / cols) - 2));
+  boardEl.style.setProperty('--size', size + 'px');
+  boardEl.style.gridTemplateColumns = 'repeat(' + cols + ', ' + size + 'px)';
+  boardEl.innerHTML = '';
+
+  for (let r = 0; r < rows; r++) {
+    grid[r] = [];
+    for (let c = 0; c < cols; c++) {
+      const el = document.createElement('div');
+      el.className = 'cell';
+      grid[r][c] = { mine: false, open: false, flag: false, count: 0, el: el };
+      bindCell(el, r, c);
+      boardEl.appendChild(el);
+    }
+  }
+}
+
+function bindCell(el, r, c) {
+  let pressTimer = null, longPressed = false;
+  el.addEventListener('contextmenu', function (e) { e.preventDefault(); toggleFlag(r, c); });
+  el.addEventListener('touchstart', function () {
+    longPressed = false;
+    pressTimer = setTimeout(function () {
+      longPressed = true; toggleFlag(r, c);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch (e) {} }
+    }, 380);
+  }, { passive: true });
+  el.addEventListener('touchend', function (e) { clearTimeout(pressTimer); if (longPressed) e.preventDefault(); });
+  el.addEventListener('touchmove', function () { clearTimeout(pressTimer); }, { passive: true });
+  el.addEventListener('click', function () {
+    if (longPressed) { longPressed = false; return; }
+    openCell(r, c);
+  });
+}
+
+function neighbors(r, c) {
+  const list = [];
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const a = r + dr, b = c + dc;
+      if (a >= 0 && a < rows && b >= 0 && b < cols) list.push([a, b]);
+    }
+  return list;
+}
+
+function placeMines(safeR, safeC) {
+  let placed = 0;
+  while (placed < mines) {
+    const r = Math.floor(Math.random() * rows);
+    const c = Math.floor(Math.random() * cols);
+    if (grid[r][c].mine) continue;
+    if (Math.abs(r - safeR) <= 1 && Math.abs(c - safeC) <= 1) continue;
+    grid[r][c].mine = true; placed++;
+  }
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      grid[r][c].count = neighbors(r, c).filter(function (p) { return grid[p[0]][p[1]].mine; }).length;
+}
+
+function toggleFlag(r, c) {
+  if (over) return;
+  const cell = grid[r][c];
+  if (cell.open) return;
+  if (!cell.flag && flagsLeft === 0) return;
+  cell.flag = !cell.flag;
+  cell.el.textContent = cell.flag ? '🚩' : '';
+  flagsLeft += cell.flag ? -1 : 1;
+  document.getElementById('flags').textContent = flagsLeft;
+}
+
+function openCell(r, c) {
+  if (over) return;
+  const cell = grid[r][c];
+  if (cell.open || cell.flag) return;
+
+  if (!started) {
+    started = true;
+    placeMines(r, c);
+    timer = setInterval(function () {
+      seconds++; document.getElementById('time').textContent = seconds;
+    }, 1000);
+  }
+  if (cell.mine) { lose(r, c); return; }
+
+  const stack = [[r, c]];
+  while (stack.length) {
+    const p = stack.pop();
+    const t = grid[p[0]][p[1]];
+    if (t.open || t.flag) continue;
+    t.open = true; openedCount++;
+    t.el.classList.add('open');
+    if (t.count > 0) {
+      t.el.textContent = t.count;
+      t.el.style.color = COLORS[t.count];
+    } else {
+      neighbors(p[0], p[1]).forEach(function (n) { stack.push(n); });
+    }
+  }
+  if (openedCount === rows * cols - mines) win();
+}
+
+function lose(r, c) {
+  over = true; clearInterval(timer);
+  for (let i = 0; i < rows; i++)
+    for (let j = 0; j < cols; j++)
+      if (grid[i][j].mine) { grid[i][j].el.textContent = '💣'; grid[i][j].el.classList.add('open'); }
+  grid[r][c].el.classList.remove('open');
+  grid[r][c].el.classList.add('boom');
+  msgEl.textContent = '💥 踩到地雷了，再試一次吧！';
+}
+
+function win() {
+  over = true; clearInterval(timer);
+  for (let i = 0; i < rows; i++)
+    for (let j = 0; j < cols; j++)
+      if (grid[i][j].mine) grid[i][j].el.textContent = '🚩';
+  document.getElementById('flags').textContent = 0;
+  msgEl.textContent = '🎉 過關了！用時 ' + seconds + ' 秒';
+}
+
+document.getElementById('restart').addEventListener('click', init);
+document.getElementById('level').addEventListener('change', init);
+init();
+</script>
+</body>
+</html>
